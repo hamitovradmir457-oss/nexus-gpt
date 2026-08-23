@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="branding/social-preview.png" alt="Nexus GPT" width="720">
+
 # 🤖 Nexus GPT
 
 **AI-ассистент в Telegram** — чат, зрение, голос, платежи и админка в одном файле
