@@ -1,0 +1,21 @@
+# Секреты — НИКОГДА не коммитить
+.env
+
+# Данные бота
+*.db
+*.db-wal
+*.db-shm
+bot_state.json
+bot.log*
+.selfupdate_pending
+.bak_*
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Служебное
+*.bak
+*.before-*.py
