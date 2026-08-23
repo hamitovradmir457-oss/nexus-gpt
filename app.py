@@ -61,7 +61,9 @@ from aiogram.types import (
     LabeledPrice,
     Message,
     PreCheckoutQuery,
+    ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    KeyboardButton,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -103,14 +105,14 @@ _raw_admins = getenv("ADMIN_IDS", "")
 ADMIN_IDS: set[int] = {int(x) for x in _raw_admins.split(",") if x.strip().isdigit()}
 
 # ── Anthropic (само-редактирование кода бота через Claude) ──────
-# Бот умеет переписывать собственный исходник по команде админа /selfedit
-# <что изменить>: читает свой файл, отправляет его Claude через Anthropic API,
-# получает полный обновлённый файл, проверяет синтаксис, делает бэкап,
-# перезаписывает себя и перезапускается (панель play2go поднимет заново).
-# Запросы идут через EchoGate (ECHOGATE_KEY ниже) — отдельный Anthropic-ключ
-# и пакет anthropic НЕ нужны. Модель по умолчанию — claude-fable-5 (сильнейшая
-# для кода); переопределить можно переменной SELFEDIT_MODEL.
-SELFEDIT_MODEL: str = getenv("SELFEDIT_MODEL", "claude-fable-5")
+# Бот умеет переписывать собственный исходник по команде /selfedit <что
+# изменить>: читает свой файл, отправляет его модели, получает полный
+# обновлённый файл, проверяет синтаксис, делает бэкап, перезаписывает себя
+# и перезапускается (панель play2go поднимет заново).
+# Запросы идут через OpenRouter (OPENROUTER_KEY). Модель по умолчанию —
+# openrouter/auto: роутер сам выбирает сильную модель под задачу;
+# переопределить можно переменной SELFEDIT_MODEL.
+SELFEDIT_MODEL: str = getenv("SELFEDIT_MODEL", "openrouter/auto")
 
 # ── play2go / Pterodactyl (перезапуск сервера как кнопкой в консоли) ──
 # Если задан ключ клиентского API панели — рестарт идёт через её API
@@ -693,7 +695,26 @@ BTN_BUY      = "💳 Пополнить баланс"
 BTN_STATS    = "📊 Статистика"
 BTN_HELP     = "❓ Помощь"
 BTN_INVITE   = "🎁 Пригласить друга"
-BTN_BONUS    = "🎯 Ежедневный бонус"
+BTN_BONUS   = "🎯 Ежедневный бонус"
+# Онбординг: при ПЕРВОМ старте новичок видит внизу одну кнопку «В меню».
+# Нажал — вместо неё появляется обычная Reply-меню (кнопки ниже) и остаётся.
+BTN_MENU    = "📋 В меню"
+
+# Кто сейчас проходит первый старт (ещё не нажал «В меню»).
+onboard_pending: set[int] = set()
+
+
+def _main_reply_kb() -> ReplyKeyboardMarkup:
+    """Обычная Reply-меню: остаётся у пользователя насовсемем после онбординга."""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_NEW_CHAT), KeyboardButton(text=BTN_MODEL)],
+            [KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_BUY)],
+            [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=BTN_INVITE), KeyboardButton(text=BTN_BONUS)],
+        ],
+        resize_keyboard=True,
+    )
 
 # ── ССЫЛКИ НА ДОКУМЕНТЫ (для согласования с банком) ───────────
 USER_AGREEMENT_URL = "https://telegra.ph/Polzovatelskoe-soglashenie-04-01-19"
@@ -746,6 +767,17 @@ class ModelCategory:
 
 
 MODELS: dict[str, ModelInfo] = {
+    # OpenRouter Auto — стоит ПЕРВЫМ в «Универсальных», чтобы первый запрос
+    # новичка (категория general по умолчанию, модель не выбрана) уходил
+    # через роутер OpenRouter: тот сам подберёт сильную модель под запрос.
+    "or_auto": ModelInfo(
+        id="openrouter/auto",
+        name="Auto (OpenRouter)",
+        emoji="🛰",
+        desc="Роутер OpenRouter сам выбирает лучшую модель под ваш запрос",
+        knowledge="",
+        provider="openrouter",
+    ),
     "deepseek_v4_flash": ModelInfo(
         id="deepseek/deepseek-v4-flash:free",
         name="DeepSeek V4 Flash",
@@ -955,6 +987,8 @@ CATEGORIES: dict[str, ModelCategory] = {
         emoji="🧠",
         desc="Для общения, анализа, текстов и большинства повседневных задач.",
         models=(
+            # Auto (OpenRouter) — первый запрос новичка идёт через него
+            "or_auto",
             "deepseek_v4_flash",
             "gemma4_31b",
             "nemotron3_super",
@@ -3485,17 +3519,18 @@ def _welcome_text(uid: int) -> str:
     left = remaining(uid)
     cat = CATEGORIES[user_category(uid)]
     return (
-        "🤖 <b>AI-ассистент</b>\n"
-        f"<i>{len(MODELS)} моделей от {_cheapest_pack_rub()} ₽ — дешевле подписки на ChatGPT</i>\n"
+        "👋 <b>Привет! Я Nexus GPT</b> — AI-ассистент в Telegram.\n"
         "━━━━━━━━━━━━━━━\n"
-        "💬 <b>Текст</b> — просто напишите вопрос\n"
-        "📷 <b>Фото</b> — проанализирую изображение\n"
-        "🎤 <b>Голос / кружок</b> — расшифрую и отвечу\n"
+        "<b>Что я умею:</b>\n"
+        "💬 отвечаю на любые вопросы\n"
+        "📷 вижу и разбираю фото\n"
+        "🎤 понимаю голосовые и видеокружки\n"
+        "📄 читаю документы PDF / DOCX\n"
+        f"🧠 <b>{len(MODELS)} нейросетей</b> — от быстрых до топовых\n"
         "━━━━━━━━━━━━━━━\n"
-        f"{cat.emoji} Категория: <b>{cat.name}</b>\n"
-        f"💰 Баланс: <b>{fmt_tokens(left)}</b> токенов\n\n"
-        "👉 <b>Просто напишите вопрос в чат — я отвечу.</b>\n"
-        "<i>Остальное — на кнопках ниже.</i>"
+        f"💰 Твой баланс: <b>{fmt_tokens(left)}</b> токенов — хватит на десятки вопросов\n"
+        f"{cat.emoji} Категория: <b>{cat.name}</b>\n\n"
+        "👉 <b>Просто напиши вопрос — я отвечу.</b>"
     )
 
 
@@ -3509,13 +3544,26 @@ def _welcome_image() -> str:
 
 
 async def _send_welcome(msg: Message, uid: int) -> None:
-    # У старых пользователей могла остаться нижняя Reply-клавиатура —
-    # убираем её служебным сообщением, которое сразу удаляем.
-    try:
-        _tmp = await msg.answer("⌨️", reply_markup=ReplyKeyboardRemove())
-        await _tmp.delete()
-    except Exception:
-        pass
+    # Reply-клавиатура: новичок на первом старте видит ОДНУ кнопку «В меню»;
+    # после нажатия (и все остальные пользователи) — обычная полная меню.
+    if uid in onboard_pending:
+        reply_kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text=BTN_MENU)]],
+            resize_keyboard=True,
+        )
+    else:
+        reply_kb = _main_reply_kb()
+
+    async def _send_reply_kb() -> None:
+        # Клавиатура уходит отдельным служебным сообщением, которое сразу
+        # удаляется: сама клавиатура у клиента ОСТАЁТСЯ (привязана к чату),
+        # а строки «⌨️» в чате не будет.
+        try:
+            _tmp = await msg.answer("⌨️", reply_markup=reply_kb)
+            await _tmp.delete()
+        except Exception:
+            pass
+
     # Приветственный баннер (если файл есть). При любой ошибке — обычный текст,
     # чтобы приветствие никогда не «сломалось» из-за отсутствия/битой картинки.
     banner = _welcome_image()
@@ -3526,12 +3574,14 @@ async def _send_welcome(msg: Message, uid: int) -> None:
                 caption=_welcome_text(uid),
                 reply_markup=main_menu_kb(),
             )
+            await _send_reply_kb()
             _banner_remember(banner, sent)
             return
         except Exception as e:
             logging.debug(f"welcome banner send failed: {e}")
             _menu_banner_file_id.pop(banner, None)
     await msg.answer(_welcome_text(uid), reply_markup=main_menu_kb())
+    await _send_reply_kb()
 
 
 async def _edit_welcome(msg: Message, uid: int) -> None:
@@ -3654,6 +3704,9 @@ async def cmd_start(msg: Message) -> None:
     # ОП здесь тоже НЕ показываем: первый ответ у новичка бесплатный, а ОП
     # включается на самом ответе (см. _run_ai_turn). Админов не беспокоим.
     if is_new:
+        # Онбординг: после согласия новичок получит welcome с единственной
+        # кнопкой «В меню» (см. _send_welcome). Нажмёт — появится полная меню.
+        onboard_pending.add(uid)
         await _send_consent_intro(msg)
         return
 
@@ -4595,6 +4648,19 @@ async def cb_op_back(cb: CallbackQuery) -> None:
 # Каждая кнопка делегирует в уже существующее действие раздела.
 # Зарегистрированы ВЫШЕ общего текстового хендлера on_text, поэтому
 # нажатие на кнопку не уходит в AI как обычный вопрос.
+
+@router.message(F.text == BTN_MENU)
+async def btn_menu(msg: Message) -> None:
+    """Онбординг-кнопка «В меню»: первый старт закончился — меняем одиночную
+    кнопку на обычную полную Reply-меню, она остаётся у пользователя."""
+    uid = _uid(msg)
+    onboard_pending.discard(uid)
+    try:
+        await msg.delete()  # убираем саму строку «В меню» из чата
+    except Exception:
+        pass
+    await _send_welcome(msg, uid)
+
 
 @router.message(F.text == BTN_NEW_CHAT)
 async def btn_new_chat(msg: Message) -> None:
@@ -5933,6 +5999,8 @@ def _admin_kb() -> InlineKeyboardBuilder:
         InlineKeyboardButton(text="⚙️ .env", callback_data="admin:file_env"),
     )
     b.row(InlineKeyboardButton(text="📰 Тест сводки новостей", callback_data="admin:news_test"))
+    b.row(InlineKeyboardButton(text="🧪 Тест /start (как видит новичок)",
+                               callback_data="admin:test_start"))
     b.row(
         InlineKeyboardButton(text="🛠 Изменить код (AI)", callback_data="admin:selfedit",
                              style="primary"),
@@ -6829,12 +6897,12 @@ def _extract_code(text: str) -> str:
 
 
 async def _claude_rewrite_source(source: str, instruction: str) -> str:
-    """Отправляет исходник + инструкцию модели SELFEDIT_MODEL через EchoGate
+    """Отправляет исходник + инструкцию модели SELFEDIT_MODEL через OpenRouter
     (OpenAI-совместимый стриминг), возвращает новый код. Стриминг обязателен —
     файл большой, ответ длинный, иначе таймаут. strip_think=False: в исходнике
     бота буквально встречается <think>...</think> (regex в _call_model), и
     фильтр размышлений повредил бы код. timeout увеличен: полная перегенерация
-    файла с рассуждениями может идти несколько минут."""
+    файла может идти несколько минут."""
     user_msg = (
         f"Инструкция: {instruction}\n\n"
         "Ниже — полный текущий файл бота. Верни его целиком с внесёнными "
@@ -6849,8 +6917,7 @@ async def _claude_rewrite_source(source: str, instruction: str) -> str:
         ],
         temperature=0.2,
         max_tokens=128000,
-        provider="echogate",
-        reasoning_effort="high",
+        provider="openrouter",
         timeout=600,
         strip_think=False,
     )
@@ -6865,9 +6932,9 @@ async def cmd_selfedit(msg: Message) -> None:
     uid = _uid(msg)
     if not _is_admin(uid):
         return  # для остальных команда «не существует»
-    if not ECHOGATE_KEY:
+    if not OPENROUTER_KEY:
         await msg.answer(
-            "⛔ Не задан <code>ECHOGATE_KEY</code> в .env — "
+            "⛔ Не задан <code>OPENROUTER_KEY</code> в .env — "
             "само-редактирование недоступно."
         )
         return
@@ -6877,10 +6944,10 @@ async def cmd_selfedit(msg: Message) -> None:
             "🛠 <b>Само-редактирование кода</b>\n\n"
             "Опишите, что изменить в боте:\n"
             "<code>/selfedit добавь команду /ping, отвечающую «pong»</code>\n\n"
-            "Бот перепишет свой исходник через Claude и покажет черновик — "
+            "Бот перепишет свой исходник и покажет черновик — "
             "запись на сервер и рестарт произойдут только после кнопки "
             "«Применить». При неудачном старте — авто-откат.\n"
-            f"🧠 Модель: <code>{html.quote(SELFEDIT_MODEL)}</code> (EchoGate)\n"
+            f"🧠 Модель: <code>{html.quote(SELFEDIT_MODEL)}</code> (OpenRouter)\n"
             "↩️ Ручной откат: <code>/rollback</code>"
         )
         return
@@ -6894,16 +6961,16 @@ async def _do_selfedit(msg: Message, instruction: str, uid: int) -> None:
     рестарт. Используется и командой /selfedit, и кнопкой в админ-панели."""
     path = os.path.abspath(__file__)
     status = await msg.answer(
-        "🧠 Claude читает код и вносит изменения… это может занять пару минут."
+        "🧠 Модель читает код и вносит изменения… это может занять пару минут."
     )
 
-    # 1) запрос к Claude
+    # 1) запрос к модели
     try:
         with open(path, encoding="utf-8") as f:
             source = f.read()
         new_code = await _claude_rewrite_source(source, instruction)
     except Exception as e:
-        await status.edit_text(f"😕 Ошибка обращения к Claude: {html.quote(str(e))}")
+        await status.edit_text(f"😕 Ошибка обращения к модели: {html.quote(str(e))}")
         return
 
     # 2) проверка синтаксиса
@@ -7164,26 +7231,93 @@ async def cb_admin_selfedit(cb: CallbackQuery) -> None:
     if not _is_admin(cb.from_user.id):
         await cb.answer("⛔", show_alert=True)
         return
-    if not ECHOGATE_KEY:
-        await cb.answer("Не задан ECHOGATE_KEY в .env", show_alert=True)
+    if not OPENROUTER_KEY:
+        await cb.answer("Не задан OPENROUTER_KEY в .env", show_alert=True)
         return
     admin_state[cb.from_user.id] = "waiting_selfedit"
     kb = InlineKeyboardBuilder()
+    # Пресеты: готовая инструкция в один тап — печатать не обязательно.
+    for pkey, (_, label) in _SELFEDIT_PRESETS.items():
+        kb.row(InlineKeyboardButton(
+            text=label, callback_data=f"selfedit:pre:{pkey}"))
     kb.row(InlineKeyboardButton(text="⬅️ Отмена", callback_data="admin:selfedit_cancel",
                                 style="primary"))
     await cb.message.edit_text(
         "🛠 <b>Изменить код через AI</b>\n"
         "━━━━━━━━━━━━━━━\n"
-        "Напишите одним сообщением, что изменить. Примеры:\n"
+        "Выбери готовый запрос ниже или напиши своим сообщением, что изменить.\n"
+        "Примеры своего запроса:\n"
         "• <i>добавь команду /ping, отвечающую «pong»</i>\n"
         "• <i>измени приветствие в /start</i>\n"
         "━━━━━━━━━━━━━━━\n"
-        f"🧠 <code>{html.quote(SELFEDIT_MODEL)}</code> · EchoGate\n"
+        f"🧠 <code>{html.quote(SELFEDIT_MODEL)}</code> · OpenRouter\n"
         "📝 Сначала черновик и diff — на сервер код попадёт только "
         "после кнопки «Применить». При неудачном старте — авто-откат.",
         reply_markup=kb.as_markup(),
     )
     await cb.answer()
+
+
+# Готовые инструкции для selfedit: callback_data короткий (лимит 64 байта),
+# полный текст хранится здесь.
+_SELFEDIT_PRESETS: dict[str, tuple[str, str]] = {
+    "1": (
+        "Сделай интерфейс бота более понятным и удобным: переработай тексты "
+        "экранов, подписи кнопок и структуру меню. Не меняй логику работы, "
+        "платежи и обработку данных — только пользовательский опыт: формулировки, "
+        "эмодзи, порядок кнопок, подсказки пользователю.",
+        "🎨 Понятный и удобный дизайн",
+    ),
+    "2": (
+        "Внимательно проверь код на потенциальные баги: гонки, необработанные "
+        "исключения, ошибки в граничных условиях. Исправь только реальные "
+        "проблемы, ничего лишнего не рефактори. К каждому исправлению добавь "
+        "краткий комментарий с объяснением.",
+        "🐛 Найти и исправить баги",
+    ),
+    "3": (
+        "Добавь понятные комментарии к сложным участкам кода (регулярные "
+        "выражения, платежи, миграции БД, стриминг). Не меняй логику. "
+        "Комментарии — на русском, объясняй «зачем», а не «что».",
+        "📝 Прокомментировать код",
+    ),
+}
+
+
+@router.callback_query(F.data.startswith("selfedit:pre:"))
+async def cb_admin_selfedit_preset(cb: CallbackQuery) -> None:
+    """Пресет selfedit: готовая инструкция запускается одним нажатием."""
+    if not _is_admin(cb.from_user.id):
+        await cb.answer("⛔", show_alert=True)
+        return
+    pkey = cb.data.split(":", 2)[2]
+    preset = _SELFEDIT_PRESETS.get(pkey)
+    if not preset:
+        await cb.answer("Неизвестный пресет", show_alert=True)
+        return
+    instruction, label = preset
+    admin_state.pop(cb.from_user.id, None)
+    await cb.answer(f"Запускаю: {label}")
+    try:
+        await cb.message.edit_text(f"🛠 Пресет: <b>{html.quote(label)}</b>\n⏳ Запускаю…")
+    except Exception:
+        pass
+    await _do_selfedit(cb.message, instruction, cb.from_user.id)
+
+
+@router.callback_query(F.data == "admin:test_start")
+async def cb_admin_test_start(cb: CallbackQuery) -> None:
+    """Прогон онбординга глазами новичка: экран согласия → welcome с кнопкой
+    «В меню». Ничего не меняет в состоянии админа: согласие уже принято,
+    onboard_pending не трогаем — это чистый предпросмотр."""
+    if not _is_admin(cb.from_user.id):
+        await cb.answer("⛔", show_alert=True)
+        return
+    await cb.answer("Показываю онбординг новичка…")
+    await cb.message.answer("🧪 <b>Тест /start</b> — так видит новый пользователь:\n\n1️⃣ Экран согласия:")
+    await _send_consent_intro(cb.message)
+    await cb.message.answer("2️⃣ После «Принимаю» — приветствие с кнопкой «В меню» внизу:")
+    await _send_welcome(cb.message, cb.from_user.id)
 
 
 @router.callback_query(F.data == "admin:selfedit_cancel")
