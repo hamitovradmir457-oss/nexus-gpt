@@ -11,6 +11,10 @@
 ![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Lines](https://img.shields.io/badge/строк_кода-9200+-blue?style=flat-square)
 
+[![404 — нет сигнала](branding/tg-banner.png)](https://t.me/qwbsw)
+
+`▶ t.me/qwbsw` — мой канал, загляни
+
 </div>
 
 ---
